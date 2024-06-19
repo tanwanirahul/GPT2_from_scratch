@@ -35,6 +35,9 @@ class CausalSelfAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                              .view(1,1, config.block_size, config.block_size))
     
+        # Setting a flag to indicate the residual weights need to be scaled.
+        setattr(self.c_proj, "requires_residual_weight_scaling", True)
+
     def forward(self, x):
         '''
             Implementation of the Forward Pass for the self attention mechanism.
@@ -76,6 +79,9 @@ class MLP(nn.Module):
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
     
+        # Setting a flag to indicate the residual weights need to be scaled.
+        setattr(self.c_proj, "requires_residual_weight_scaling", True)
+
     def forward(self, x):
         '''
             Forward Pass logic for the Feed Forward portion of the attention block.
@@ -134,8 +140,30 @@ class GPT(nn.Module):
                                         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
-        # wte and lm_head layers share the weights. 
+        # wte and lm_head layers share the weights.
         self.transformer.wte.weight = self.lm_head.weight
+
+        # Apply weights initialization logic.
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        '''
+            Defines the weights initialization mechanism for the `module`.
+        '''
+        # weights and bias initialization logic for Linear layers.
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, "requires_residual_weight_scaling"):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        # initialization for embedding layers.
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        
+        
+            
 
     def forward(self, batch_x, targets=None):
         '''
