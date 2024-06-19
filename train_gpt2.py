@@ -134,6 +134,9 @@ class GPT(nn.Module):
                                         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
+        # wte and lm_head layers share the weights. 
+        self.transformer.wte.weight = self.lm_head.weight
+
     def forward(self, batch_x, targets=None):
         '''
             Implements forward pass for the GPT model.
