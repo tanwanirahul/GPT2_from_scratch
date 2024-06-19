@@ -354,7 +354,11 @@ if __name__ == "__main__":
     for i in range(10):
         s = time.time()
         optimizer.zero_grad()
-        x, labels = loader.next_batch()
+        # optimization2 - Use autocast for mixed precision computation. Some of
+        # the operations will run with bfloat16 precision while others main continue to
+        # run with float32 precision. Only works on latest CUDA chips - Ampere onwards.
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            x, labels = loader.next_batch()
         x = x.to(device=device)
         labels = labels.to(device=device)
         logits, loss = model(x, labels)
