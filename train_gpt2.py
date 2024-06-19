@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
 from utils import FileDataLoader
+import time
 
 @dataclass
 class GPTConfig:
@@ -325,19 +326,23 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     torch.cuda.manual_seed(42)
 
-    device = "cpu"
+    #device = "mps"
     prompt = "Hello, I'm a language model,"
     batch_size = 3
     max_length = 30
     model_type = "gpt2"
     data_file = "data/input.txt"
 
+    # optimization1 : Set the lower precision for float32 multiplications.
+    # This optimization only works for CUDA devices. For MPS, it worsens the performance.
+    #torch.set_float32_matmul_precision("high")
+
     # Create a GPT2 model with random weights for the purposes of training.
     model = GPT(GPTConfig())
     model.to(device=device)
 
     # Define batch size and sequence length
-    batch_size, seq_length = 4, 32
+    batch_size, seq_length = 1, 1024
 
     # Create a data loader.
     loader = FileDataLoader(data_file, batch_size=batch_size, seq_length=seq_length, model_type=model_type)
@@ -345,7 +350,9 @@ if __name__ == "__main__":
     # Define the optimizer.
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
-    for i in range(50):
+    loop_start = time.time()
+    for i in range(10):
+        s = time.time()
         optimizer.zero_grad()
         x, labels = loader.next_batch()
         x = x.to(device=device)
@@ -353,4 +360,11 @@ if __name__ == "__main__":
         logits, loss = model(x, labels)
         loss.backward()
         optimizer.step()
-        print(f"Loss at step{i+1}: {loss}")
+        if device == "cuda":
+            torch.cuda.synchronize()
+        elif device == "mps":
+            torch.mps.synchronize()
+        e = time.time()
+        print(f"Loss at step{i+1}: {loss}. Step Time: {(e-s)*1000}")
+    loop_end = time.time()
+    print(f'\nTotal execution time: {(loop_end-loop_start) * 1000}')
