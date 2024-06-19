@@ -3,6 +3,8 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from transformers import GPT2LMHeadModel
+from utils import FileDataLoader
 
 @dataclass
 class GPTConfig:
@@ -157,7 +159,7 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         
         # Finally, pass the batch tokens to the LM_head. If targets are passed, calculate the loss.
-        if targets:
+        if targets is not None:
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
@@ -258,9 +260,6 @@ def run_eval(model, prompt, batch_size, max_length, model_type):
 
     x = tokens.to(device)
     
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-
     while x.size(1) < max_length:
         with torch.no_grad():
             output = model(x)
@@ -292,23 +291,35 @@ if __name__ == "__main__":
         Load the GPT2 params from the pre-trained HF model.  
     '''
     device = get_device()
+    torch.manual_seed(42)
+    torch.cuda.manual_seed(42)
+
     device = "cpu"
     prompt = "Hello, I'm a language model,"
     batch_size = 3
     max_length = 30
     model_type = "gpt2"
+    data_file = "data/input.txt"
 
-    print(f"Preparing to run inference on the model using the device: {device}")
-
-    model = GPT.from_pretrained(model_type)
+    # Create a GPT2 model with random weights for the purposes of training.
+    model = GPT(GPTConfig())
     model.to(device=device)
-    print(f"The model has been created with the pre-trained weights from the HF transformer.")
 
-    # Run evaluation on the GPT model.
-    run_eval(model=model, prompt=prompt, batch_size=batch_size, max_length=max_length, model_type=model_type)
+    # Define batch size and sequence length
+    batch_size, seq_length = 4, 32
+
+    # Create a data loader.
+    loader = FileDataLoader(data_file, batch_size=batch_size, seq_length=seq_length, model_type=model_type)
     
-    # Run evaluation on the HF's GPT2 implementation for comparison. 
-    from transformers import GPT2LMHeadModel
-    model = GPT2LMHeadModel.from_pretrained(model_type)
-    model.to(device=device)    
-    run_eval(model=model, prompt=prompt, batch_size=batch_size, max_length=max_length, model_type=model_type)
+    # Define the optimizer.
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+    for i in range(50):
+        optimizer.zero_grad()
+        x, labels = loader.next_batch()
+        x = x.to(device=device)
+        labels = labels.to(device=device)
+        logits, loss = model(x, labels)
+        loss.backward()
+        optimizer.step()
+        print(f"Loss at step{i+1}: {loss}")
