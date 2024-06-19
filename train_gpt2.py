@@ -340,6 +340,7 @@ if __name__ == "__main__":
     # Create a GPT2 model with random weights for the purposes of training.
     model = GPT(GPTConfig())
     model.to(device=device)
+    model = torch.compile(model)
 
     # Define batch size and sequence length
     batch_size, seq_length = 1, 1024
