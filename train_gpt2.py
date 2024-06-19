@@ -339,7 +339,8 @@ if __name__ == "__main__":
     #torch.set_float32_matmul_precision("high")
 
     # Create a GPT2 model with random weights for the purposes of training.
-    model = GPT(GPTConfig())
+    # optimization 5 - Use the vocab size of 50304 (a power of 2) instead of 50257.
+    model = GPT(GPTConfig(vocab_size=50304))
     model.to(device=device)
 
     # optimization3 - Compile the model upfront and let torch perform optimizations.
