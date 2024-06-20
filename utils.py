@@ -1,5 +1,6 @@
 import tiktoken
 import torch
+import math
 
 class FileDataLoader:
     def __init__(self, file_path, batch_size, seq_length, model_type="gpt2"):
@@ -39,3 +40,39 @@ class FileDataLoader:
             self.current_position = 0
             
         return x, labels
+    
+    
+    
+
+class LRScheduler:
+    '''
+        Implements learning rate scheduler by factoring in warmup steps, 
+        max_lr and min_lr constraints. GPT3 uses cosine scheduler for learning
+        rate. Refer to the GPT3 paper for details.
+    '''
+    max_lr = 3e-4
+    min_lr = max_lr * 0.1
+    warampup_steps = 4
+    max_decay_steps = 10
+
+    @classmethod
+    def get(cls):
+        '''
+            Returns LR scheduler.
+        '''
+        def lr_schedule(step):
+            # Check for warmup steps.
+            if step < cls.warampup_steps:
+                return cls.max_lr * (step + 1) / cls.warampup_steps
+            
+            # Check if we have reached max_decay steps. If so, return min_lr.
+            if step > cls.max_decay_steps:
+                return cls.min_lr
+
+            # In between, use cosine decay down to min learning rate.
+            decay_ratio = (step - cls.warampup_steps) / (cls.max_decay_steps - cls.warampup_steps)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+            return cls.min_lr + coeff * (cls.max_lr - cls.min_lr)
+
+        return lr_schedule
