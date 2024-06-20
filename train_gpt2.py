@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
-from utils import FileDataLoader, LRScheduler
+from utils import FileDataLoader, LRScheduler, configure_adam_with_weight_decay
 import time
 
 @dataclass
@@ -360,9 +360,11 @@ if __name__ == "__main__":
     
     # Define the optimizer.
     # Optimizer tuning1: Define - betas, lr and eps based on GPT3 training details.
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9,0.95), eps=1e-8)
-
+    # Optimizer tuning4: Configuring weigth decay for AdamW.
+    optimizer = configure_adam_with_weight_decay(model, weight_dacay=0.1, learning_rate=6e-4, device=device)
+    
     lr_scheduler = LRScheduler.get()
+    
     loop_start = time.time()
     for i in range(max_steps):
         s = time.time()

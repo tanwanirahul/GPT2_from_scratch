@@ -1,6 +1,8 @@
 import tiktoken
 import torch
 import math
+import torch
+import inspect
 
 class FileDataLoader:
     def __init__(self, file_path, batch_size, seq_length, model_type="gpt2"):
@@ -76,3 +78,36 @@ class LRScheduler:
             return cls.min_lr + coeff * (cls.max_lr - cls.min_lr)
 
         return lr_schedule
+    
+
+def configure_adam_with_weight_decay(model, weight_dacay, learning_rate, device):
+    '''
+        Returns the AdamW optimizer with Weight Decay configured for the 
+        `model` parameters. 
+    '''
+    # all paramters that requires gradient computation.
+    param_dict = {pn:p for pn, p in model.named_parameters() if p.requires_grad}
+    
+    # We will only apply parameter decay to tensors with dim>2. All Linear layers,
+    # Embedding layers will be weight decayed. Layer Norms and Biases won't.
+    params_to_decay = [p for n, p in param_dict.items() if p.dim() >= 2]
+    params_not_to_decay = [p for n, p in param_dict.items() if p.dim() < 2]
+    
+    # Define paramter groups for Adam optimizer with corresponding weigth decays.
+    optim_param_groups = [
+         {"params": params_to_decay,"weight_dacay": weight_dacay},
+         {"params": params_not_to_decay,"weight_dacay": 0.0},
+    ]
+    
+    num_decay_params = sum(p.numel() for p in params_to_decay)
+    num_non_decay_params = sum(p.numel() for p in params_not_to_decay)
+    print(f"Decay Stats - Tensors: {len(params_to_decay)} with Parameters: {num_decay_params}")
+    print(f"Non-Decay Stats - Tensors: {len(params_not_to_decay)} with Parameters: {num_non_decay_params}")
+
+    # Check if the fused functionality is available.
+    # Uses inspect module. Looks hacky!
+    use_fused = ("cuda" in device) and ("fused" in inspect.signature(torch.optim.AdamW).parameters())
+
+    # Create an optimizer with parameter groups.
+    optimizer = torch.optim.AdamW(optim_param_groups, lr=learning_rate, betas=(0.9,0.95), eps=1e-8, fused=use_fused)
+    return optimizer 
