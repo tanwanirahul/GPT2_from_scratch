@@ -336,7 +336,15 @@ if __name__ == "__main__":
     device = "cpu"
     max_steps = 10
 
+    # Define batch size and sequence length
+    batch_size, seq_length = 1, 1024
 
+    # Parameters for gradient scaling.
+    total_batch_size = 5120 # Increase this size based on available resources.
+    
+    assert total_batch_size % (batch_size * seq_length) == 0 #Total Batch Size is divisble by batch_size * seq_length
+    grad_accm_steps = total_batch_size // (batch_size * seq_length)
+    print(f"Desired batch size: {total_batch_size}; Required gradient accumulation steps: {grad_accm_steps}")
     
     # optimization1 : Set the lower precision for float32 multiplications.
     # This optimization only works for CUDA devices. For MPS, it worsens the performance.
@@ -352,9 +360,6 @@ if __name__ == "__main__":
     if device == "cuda":
         model = torch.compile(model)
 
-    # Define batch size and sequence length
-    batch_size, seq_length = 1, 1024
-
     # Create a data loader.
     loader = FileDataLoader(data_file, batch_size=batch_size, seq_length=seq_length, model_type=model_type)
     
@@ -366,22 +371,26 @@ if __name__ == "__main__":
     lr_scheduler = LRScheduler.get()
     
     loop_start = time.time()
-    for i in range(max_steps):
+    for step in range(max_steps):
+        loss_accm = 0
         s = time.time()
         optimizer.zero_grad()
-        # optimization2 - Use autocast for mixed precision computation. Some of
-        # the operations will run with bfloat16 precision while others main continue to
-        # run with float32 precision. Only works on latest CUDA chips - Ampere onwards.
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        # Optimization 5: implement gradient accumulation to account for small batches.
+        for micro_step in range(grad_accm_steps):
             x, labels = loader.next_batch()
-        x = x.to(device=device)
-        labels = labels.to(device=device)
-        logits, loss = model(x, labels)
-        loss.backward()
+            x, labels = x.to(device=device), labels.to(device=device)
+            # optimization2 - Use autocast for mixed precision computation. Some of
+            # the operations will run with bfloat16 precision while others main continue to
+            # run with float32 precision. Only works on latest CUDA chips - Ampere onwards.
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                logits, loss = model(x, labels)
+            loss = loss / grad_accm_steps
+            loss_accm += loss.detach()
+            loss.backward()
         # Optimizer tuning2: Clip gradient's norm to 1. Refer GPT3 paper training details.
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         # Optimizer tuning3: Implement the cosine learning scheduler.
-        lr = lr_scheduler(i)
+        lr = lr_scheduler(step)
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
@@ -391,7 +400,7 @@ if __name__ == "__main__":
         elif device == "mps":
             torch.mps.synchronize()
         e = time.time()
-        tokens_per_sec = (loader.B * loader.T) / (e-s)
-        print(f"step: {i+1:3d} | loss: {loss:9.6f} | lr: {lr:.4e} | norm: {norm:7.4f} | dt: {(e-s)*1000:.6f}ms | toks/sec: {tokens_per_sec:.5f}")
+        tokens_per_sec = (loader.B * loader.T * grad_accm_steps) / (e-s)
+        print(f"step: {step+1:3d} | loss: {loss_accm:9.6f} | lr: {lr:.4e} | norm: {norm:7.4f} | dt: {(e-s)*1000:.6f}ms | toks/sec: {tokens_per_sec:.5f}")
     loop_end = time.time()
     print(f'\nTotal execution time: {(loop_end-loop_start) * 1000}')
