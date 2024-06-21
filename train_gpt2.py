@@ -336,6 +336,7 @@ if __name__ == "__main__":
     device = "cpu"
     max_steps = 10
 
+    print(f"Using the device: {device}")
     # Define batch size and sequence length
     batch_size, seq_length = 1, 1024
 
