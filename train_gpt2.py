@@ -333,7 +333,7 @@ if __name__ == "__main__":
     max_length = 30
     model_type = "gpt2"
     data_file = "data/input.txt"
-    device = "cpu"
+    #device = "cpu"
     max_steps = 10
 
     print(f"Using the device: {device}")
