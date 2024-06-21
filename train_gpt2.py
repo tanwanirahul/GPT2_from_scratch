@@ -359,7 +359,9 @@ if __name__ == "__main__":
     # optimization3 - Compile the model upfront and let torch perform optimizations.
     # Again, this only works for CUDA and for latest versions - V100, A100, H100.
     if device == "cuda":
+        print(f"Model compilation begins!")
         model = torch.compile(model)
+        print(f"Done compiling the model.")
 
     # Create a data loader.
     loader = FileDataLoader(data_file, batch_size=batch_size, seq_length=seq_length, model_type=model_type)
@@ -383,7 +385,8 @@ if __name__ == "__main__":
             # optimization2 - Use autocast for mixed precision computation. Some of
             # the operations will run with bfloat16 precision while others main continue to
             # run with float32 precision. Only works on latest CUDA chips - Ampere onwards.
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            #with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
                 logits, loss = model(x, labels)
             loss = loss / grad_accm_steps
             loss_accm += loss.detach()

@@ -106,7 +106,9 @@ def configure_adam_with_weight_decay(model, weight_dacay, learning_rate, device)
 
     # Check if the fused functionality is available.
     # Uses inspect module. Looks hacky!
-    use_fused = ("cuda" in device) and ("fused" in inspect.signature(torch.optim.AdamW).parameters())
+    # FIXME: Exception checking for fused availability.
+    #use_fused = ("cuda" in device) and ("fused" in inspect.signature(torch.optim.AdamW).parameters())
+    use_fused = False
 
     # Create an optimizer with parameter groups.
     optimizer = torch.optim.AdamW(optim_param_groups, lr=learning_rate, betas=(0.9,0.95), eps=1e-8, fused=use_fused)
