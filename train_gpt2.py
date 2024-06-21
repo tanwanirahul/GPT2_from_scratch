@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
-from utils import FileDataLoader, LRScheduler, configure_adam_with_weight_decay
+from utils import FileDataLoader, LRScheduler, configure_adam_with_weight_decay, get_device
 import time
 
 @dataclass
@@ -265,17 +265,6 @@ class GPT(nn.Module):
                     sd[k].copy_(hf_sd[k])
                     
         return model
-
-def get_device():
-    '''
-        Returns the device to be used for training / inference.
-    '''
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def run_eval(model, prompt, batch_size, max_length, model_type):
     '''

@@ -112,4 +112,16 @@ def configure_adam_with_weight_decay(model, weight_dacay, learning_rate, device)
 
     # Create an optimizer with parameter groups.
     optimizer = torch.optim.AdamW(optim_param_groups, lr=learning_rate, betas=(0.9,0.95), eps=1e-8, fused=use_fused)
-    return optimizer 
+    return optimizer
+
+
+def get_device():
+    '''
+        Returns the device to be used for training / inference.
+    '''
+    if torch.cuda.is_available():
+        return "cuda"
+    elif torch.backends.mps.is_available():
+        #return "mps"
+        return "cpu"
+    return "cpu"
