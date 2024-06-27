@@ -1,3 +1,5 @@
+import os
+import numpy as np
 import tiktoken
 import torch
 import math
@@ -85,6 +87,68 @@ class FileDataLoaderWithDDP:
 
         return x, labels
 
+class FineWebDataLoader:
+    def __init__(self,  data_dir, split, batch_size, seq_length, rank, num_processes, model_type="gpt2"):
+        '''
+            Loads the Fineweb dataset by reading through the shards file created
+            by fineweb.py. 
+            `data_dir` points to the directory containing the shards.
+            `split` specifies the choice between train/validation split.
+        '''
+        assert split in ("train", "val"), f"split must be one of train/val."
+
+        self.B = batch_size
+        self.T = seq_length
+        self.rank = rank
+        self.num_processes = num_processes
+
+        shards = os.listdir(path=data_dir)
+        shards = sorted([shard for shard in shards if split in shard])
+        assert len(shards) > 0, f"Did not find any shards for the split: {split}"
+
+        # Shards containing the filepaths for the given split.        
+        self.shards = [os.path.join(data_dir, shard) for shard in shards]
+
+        if rank == 0:
+            print(f"Found {len(self.shards)} shards for {split} split.")
+
+        self.reset()
+
+    def __load_tokens(self, shard_filename):
+        '''
+            loads the pytorch tensor containing the tokens in the shard specified by
+            `shard_filename`.
+        '''
+        np_tokens = np.load(shard_filename)
+        np_tokens = np_tokens.astype(np.int32)
+        return torch.tensor(np_tokens, dtype=torch.long)
+    
+    def reset(self, shard=0):
+        '''
+            Resets the position of the DataLoader to the starting position in shard 0
+            and loads the corresponding tokens.
+        '''
+        self.current_shard = shard
+        self.tokens = self.__load_tokens(self.shards[self.current_shard])
+        self.current_position = self.B * self.T * self.rank
+
+    def next_batch(self):
+        '''
+            Returns next batch of data from the data source.
+        '''
+        B, T, curr = self.B, self.T, self.current_position
+
+        buff = self.tokens[curr:curr+(B*T)+1]
+        x = buff[:-1].view(B,T)
+        labels = buff[1:].view(B,T)
+
+        self.current_position += (B*T*self.num_processes)
+
+        # Reset if the next batch would be out of bounds.
+        if self.current_position + (B*T*self.num_processes) + 1 > len(self.tokens):
+            self.reset(shard=(self.current_shard + 1) % len(self.shards))
+
+        return x, labels
 
 class LRScheduler:
     '''
