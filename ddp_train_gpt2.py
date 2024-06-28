@@ -12,52 +12,68 @@ import torch.distributed
 import torch.nn as nn
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
-from utils import FileDataLoaderWithDDP, LRScheduler, configure_adam_with_weight_decay
+from utils import FineWebDataLoader, LRScheduler, configure_adam_with_weight_decay
 import time
 from models import GPTConfig, GPT
 from torch.distributed import init_process_group, destroy_process_group, all_reduce
 from torch.nn.parallel import DistributedDataParallel as DDP
+from hellaswag import render_example, iterate_examples, get_most_likely_row
 
-def run_eval(model, prompt, batch_size, max_length, model_type):
+def run_val(model, val_data_loader:FineWebDataLoader, device):
     '''
-        Runs the model in eval model and passes the prompt repeated `batch_size` times.
+        Given the validation data loader `val_data_loader` and the `model`
+        run the validation datapoints through the model and calculate the loss.
     '''
     model.eval()
-
-    print(f"\n\nRunning evaluations using the model: {type(model)}")
-
-    import tiktoken
-    tokenizer = tiktoken.get_encoding(model_type)
-    enc_tokens = tokenizer.encode(prompt)
-    tokens = torch.tensor(enc_tokens, dtype=torch.long) # shape: (8,)
-    tokens = tokens.unsqueeze(0).repeat(batch_size, 1) # shape: (3, 8)
-
-    x = tokens.to(device)
+    val_data_loader.reset()
     
-    while x.size(1) < max_length:
+    val_loss_accm = 0
+    val_steps = 5
+    with torch.no_grad():
+        for _ in range(val_steps):
+            x, y = val_data_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                logits, loss = model(x, y)
+            loss = loss / val_steps
+            val_loss_accm += loss.detach()
+    return val_loss_accm
+
+def run_hellaswag_eval(model, rank, world_size, device):
+    '''
+        Run hellaswag evaluation.
+    '''
+    num_correct_norm = 0
+    num_total = 0
+
+    for i, example in enumerate(iterate_examples("val")):
+        # process examples in the round robin fashion across num of processes.
+        if i % world_size != rank:
+            continue
+        # convert the example into tokens and corresponding masks and labels.
+        _, tokens, mask, label = render_example(example)
+        tokens, mask = tokens.to(device), mask.to(device)
+
+        # get the logits.
         with torch.no_grad():
-            output = model(x)
-
-            # Get Logits.
-            if isinstance(model, GPT):
-                logits = output[0]
-            elif isinstance(model, GPT2LMHeadModel):
-                logits = output.logits
-            else:
-                raise Exception("Invalid Model Type.")
-
-            logits = logits[:, -1, :] #(B, vocab_size)
-            probs = F.softmax(logits, dim=-1) #(Run softmax on vocab_dimensions)
-
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-            idx = torch.multinomial(topk_probs, 1)
-            x_col = torch.gather(topk_indices, -1, idx)
-            x = torch.cat((x, x_col), dim=1)
-
-    print("\nResponse:\n")
-    for i in range(batch_size):
-        decoded = tokenizer.decode(x[i, :max_length].tolist())
-        print(f">{decoded}")
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                logits, loss = model(tokens)
+            
+            pred_norm = get_most_likely_row(tokens, mask, logits)
+        num_total += 1
+        num_correct_norm += int(pred_norm == label)
+        
+        num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+        num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+        
+        all_reduce(num_total, torch.distributed.ReduceOp.SUM)
+        all_reduce(num_correct_norm, torch.distributed.ReduceOp.SUM)
+        
+        num_total = num_total.item()
+        num_correct_norm = num_correct_norm.item()
+        
+    acc_norm = num_correct_norm / num_total
+    return acc_norm
 
 def setup_ddp():
     '''
@@ -78,6 +94,11 @@ if __name__ == "__main__":
     '''
     torch.manual_seed(1337)
     torch.cuda.manual_seed(1337)
+
+    # Create logs directory and define a path to logs.txt
+    logs_dir = "logs"
+    os.makedirs(logs_dir, exist_ok=True)
+    log_file = os.path.join(logs_dir, "logs.txt")
 
     # Is the script executed in ddp mode.
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -101,8 +122,14 @@ if __name__ == "__main__":
     max_length = 30
     model_type = "gpt2"
     data_file = "data/input.txt"
+    data_dir = "fine_web/edu_fineweb10B/"
     #device = "cpu"
     max_steps = 10
+    val_steps = 5
+    chkpoint_steps = 5
+    hellaswag_steps = 5
+    model_compilation = False
+    chkpoint_save_enabled = True
 
     print(f"Using the device: {device}")
     # Define batch size and sequence length
@@ -130,13 +157,20 @@ if __name__ == "__main__":
 
     # optimization3 - Compile the model upfront and let torch perform optimizations.
     # Again, this only works for CUDA and for latest versions - V100, A100, H100.
-    model = torch.compile(model)
+    if model_compilation:
+        model = torch.compile(model)
     
     #Wrap the model into DDP.
     model = DDP(model, device_ids=[ddp_local_rank])
     raw_model = model.module
     # Create a data loader.
-    loader = FileDataLoaderWithDDP(data_file, batch_size=batch_size, seq_length=seq_length,
+    loader = FineWebDataLoader( data_dir, "train", batch_size=batch_size, seq_length=seq_length,
+                                   rank=ddp_rank,
+                                   num_processes=ddp_world_size,
+                                   model_type=model_type)
+    
+    # Create a data loader.
+    val_loader = FineWebDataLoader( data_dir, "val", batch_size=batch_size, seq_length=seq_length,
                                    rank=ddp_rank,
                                    num_processes=ddp_world_size,
                                    model_type=model_type)
@@ -150,6 +184,40 @@ if __name__ == "__main__":
     
     loop_start = time.time()
     for step in range(max_steps):
+        
+        last_step = step == (max_steps - 1)
+        # Check val_steps to see  if we need to run validation.
+        if step % val_steps == 0 or last_step:
+            val_loss_accm = run_val(model, val_loader, device)
+            all_reduce(val_loss_accm, op=torch.distributed.ReduceOp.AVG)
+            if master_process:
+                print(f"validation loss: {val_loss_accm.item():.4f}")
+                with open(log_file, "a") as f:
+                    f.write(f"{step} val {val_loss_accm.item():.4f}\n")
+
+        # Check chkpoint_steps to see if the model need to be saved.
+        if master_process and chkpoint_save_enabled \
+            and step > 0 and (step % chkpoint_steps == 0 or last_step):
+
+            chkpoint_path = os.path.join(logs_dir, f"model_{step:05d}.pt")
+            chkpoint = {
+                "model": raw_model.state_dict(),
+                "config": raw_model.config,
+                "step": step,
+                "val_loss": val_loss_accm.item()
+            }
+            torch.save(chkpoint, chkpoint_path)
+
+        # Check hellaswag steps to see if the hellaswag evaluation need to run.
+        if (step % hellaswag_steps == 0 or last_step) and (not model_compilation):
+            acc_norm = run_hellaswag_eval(model, ddp_rank, ddp_world_size, device)
+            if master_process:
+                print(f"Hellaswag accuracy: {acc_norm:.4f}")
+                with open(log_file, 'a') as f:
+                    f.write(f"{step} hella {acc_norm:.4f}\n")
+
+
+        model.train()
         loss_accm = 0
         s = time.time()
         optimizer.zero_grad()

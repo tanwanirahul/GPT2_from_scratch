@@ -1,4 +1,7 @@
 """
+CREDITS: This source file has been adopted as is from -
+https://github.com/karpathy/build-nanogpt/blob/master/fineweb.py
+
 FineWeb-Edu dataset (for srs pretraining)
 https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
 Downloads and tokenizes the data and saves data shards to disk.
